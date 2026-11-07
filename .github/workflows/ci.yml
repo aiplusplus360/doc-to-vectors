@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Byte-compile
+        run: python -m compileall -q docvec tests examples
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Doctest the package docstring
+        run: python -c "import doctest, docvec; r = doctest.testmod(docvec); assert r.failed == 0, r"
+      - name: Install
+        run: python -m pip install --quiet .
+      - name: Index the example docs
+        run: python -m docvec index examples/docs --out ${{ runner.temp }}/index.json --max-tokens 110
+      - name: Search returns the right section
+        shell: bash
+        run: |
+          set -e
+          python -m docvec search "rotate the signing key" \
+            --index "${{ runner.temp }}/index.json" --limit 1 --json > hits.json
+          cat hits.json
+          python -c "import json; h = json.load(open('hits.json')); assert h and 'Rollback' not in h[0]['path']; assert 'Secrets' in h[0]['path'], h[0]['path']"
+      - name: Chunk invariants hold on the fixture
+        run: python -c "from docvec import chunk_document, ChunkConfig; c = chunk_document(open('examples/docs/handbook.md', encoding='utf-8').read(), 'h.md', config=ChunkConfig(max_tokens=110)); assert len(c) > 3; assert all(x.tokens <= 110 or x.oversized for x in c)"
+      - name: Empty query exits non-zero
+        shell: bash
+        run: |
+          python -m docvec search "qqqzzz-no-such-token" --index "${{ runner.temp }}/index.json" --limit 1 || test $? -eq 1
